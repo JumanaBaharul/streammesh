@@ -1,0 +1,205 @@
+# StreamMesh example configuration.
+#
+# Everything lives in one file: where data comes from, what it is scrubbed of,
+# where it goes, and the rules that decide all three.
+#
+# Validate it without starting anything:
+#   streammesh check -config examples/pipelines.yaml
+
+server:
+  addr: ":8080"
+  # Set api_token (or api_token_env) to require a bearer token on the mutating
+  # control-plane endpoints. Probes and /metrics stay open.
+  api_token_env: STREAMMESH_API_TOKEN
+  read_timeout: 15s
+  write_timeout: 30s
+
+pipeline:
+  workers: 4
+  queue_size: 8192
+  sink_queue_size: 8192
+  accept_timeout: 5s
+  shutdown_grace: 10s
+  # Anything a rule does not route explicitly lands here.
+  default_sinks: [archive]
+  wal:
+    enabled: true
+    dir: .streammesh/wal
+    segment_bytes: 32MB
+    fsync_interval: 200ms
+    # Turn on for an fsync per event: maximum durability, much lower throughput.
+    sync_each: false
+  dedup:
+    enabled: true
+    ttl: 10m
+    bits: 4194304
+    hashes: 3
+  retry:
+    max_attempts: 5
+    base: 25ms
+    max: 2s
+    jitter: 0.5
+    max_elapsed: 15s
+
+dlp:
+  rule_sets:
+    - name: pii
+      patterns:
+        - name: email
+          regex: '[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'
+          replace: "[redacted:email]"
+        - name: card
+          regex: '\b(?:\d[ \-]?){13,19}\b'
+          replace: "[redacted:card]"
+        - name: bearer
+          regex: '(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}'
+          replace: "[redacted:token]"
+        - name: jwt
+          regex: '\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}\b'
+          replace: "[redacted:jwt]"
+        - name: aws_key
+          regex: '\bAKIA[0-9A-Z]{16}\b'
+          replace: "[redacted:aws-key]"
+      fields:
+        - path: attrs.password
+          replace: "[redacted:password]"
+        - path: attrs.authorization
+          replace: "[redacted:auth]"
+        - path: attrs.session_id
+          replace: "[redacted:session]"
+      # Hashed instead of removed, so the value can still be correlated.
+      hash_fields:
+        - attrs.contact
+      salt: "change-me-per-deployment"
+
+sources:
+  - id: app-http
+    type: http
+    listen: ":8081"
+    path: /ingest
+    parser: json
+    max_body_bytes: 8MB
+    # Require "Authorization: Bearer <secret>" on this endpoint when set.
+    secret: ""
+
+  - id: app-syslog
+    type: syslog
+    listen: ":5514"
+    network: udp
+    parser: syslog
+
+  - id: app-logfile
+    type: file
+    file: ./examples/sample.log
+    parser: json
+    start_at: end
+    poll_interval: 1s
+    offsets_file: .streammesh/tailer-offsets.json
+
+  - id: partner-webhooks
+    type: webhook
+    listen: ":8082"
+    path: /webhook
+    parser: kv
+    # HMAC-SHA256 signature verified over the raw body when set.
+    secret: ""
+
+sinks:
+  - id: archive
+    type: file
+    file: ./out/events.ndjson
+    rotate_bytes: 64MB
+    rotate_keep: 5
+    batch_size: 500
+    flush_interval: 250ms
+    retry:
+      max_attempts: 5
+
+  - id: recent
+    type: memory
+    buffer_size: 1024
+
+  - id: alerts
+    type: http
+    url: http://localhost:9000/collect
+    headers:
+      X-StreamMesh-Route: alerts
+    batch_size: 50
+    flush_interval: 500ms
+    timeout: 3s
+    retry:
+      max_attempts: 4
+      base: 50ms
+
+  # Requires a broker; disabled here so the example runs standalone.
+  - id: kafka-events
+    type: kafka
+    enabled: false
+    brokers: ["localhost:9092"]
+    topic: streammesh.events
+    batch_size: 500
+
+  # Requires AWS (or compatible) credentials; disabled here.
+  - id: cold-storage
+    type: s3
+    enabled: false
+    endpoint: "https://s3.ap-south-1.amazonaws.com"
+    bucket: "streammesh-archive"
+    region: ap-south-1
+    prefix: "telemetry"
+    use_path_style: false
+
+rules:
+  # 1. Health checks are noise at volume; drop them before anything else runs.
+  - name: drop-healthcheck
+    match:
+      field: category
+      equals: healthcheck
+    actions:
+      - drop: true
+
+  # 2. Scrub everything, unconditionally, before any route decision.
+  - name: redact-pii
+    match:
+      always: true
+    actions:
+      - redact: pii
+
+  # 3. Security and failure signals get an alert route and a tag.
+  - name: route-errors
+    match:
+      severity: error
+    actions:
+      - tag: alert
+      - route: [alerts, recent]
+
+  # 4. DLP findings are routed to the alert destination regardless of severity.
+  - name: route-dlp
+    match:
+      any:
+        - field: category
+          equals: dlp
+        - field: attrs.dlp_match
+          exists: true
+      not:
+        field: severity
+        in: [debug]
+    actions:
+      - tag: dlp
+      - route: [alerts]
+
+  # 5. Keep a deterministic tenth of debug traffic instead of all of it.
+  - name: sample-debug
+    match:
+      field: severity
+      equals: debug
+    actions:
+      - sample:
+          percent: 10
+
+  # 6. Everything else goes to the archive and the recent view.
+  - name: default
+    match:
+      always: true
+    actions:
+      - route: [archive, recent]

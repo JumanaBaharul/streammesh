@@ -1,0 +1,24 @@
+# Normalise line endings in the repository. The engine targets Linux containers,
+# so sources, build files and scripts must stay LF even when authored on Windows.
+* text=auto eol=lf
+
+*.go   text eol=lf
+*.mod  text eol=lf
+*.sum  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+Dockerfile        text eol=lf
+Makefile          text eol=lf
+*.sh              text eol=lf
+*.ps1             text eol=crlf
+
+# Windows-only helpers keep CRLF so cmd.exe batch files keep working.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Binary assets must never be touched.
+*.exe  binary
+*.png  binary
+*.jpg  binary
+*.gif  binary

@@ -1,0 +1,114 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  test:
+    name: build, vet and race tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Verify modules are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Race-enabled tests with coverage
+        run: go test -race -count=1 -covermode=atomic -coverprofile=coverage.txt ./...
+
+      - name: Coverage summary
+        run: |
+          go tool cover -func=coverage.txt | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.txt
+          if-no-files-found: error
+
+  staticcheck:
+    name: staticcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+  benchmarks:
+    name: benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Run benchmarks
+        run: |
+          {
+            echo '```'
+            go test -run '^$' -bench . -benchmem ./internal/...
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  docker:
+    name: container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t streammesh:ci .
+      - name: Smoke test the image
+        run: |
+          docker run -d --name streammesh-ci -p 8080:8080 -p 8081:8081 streammesh:ci
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://localhost:8080/healthz; then
+              echo "engine is up"
+              break
+            fi
+            sleep 1
+          done
+          curl --silent --fail http://localhost:8080/healthz
+          curl --silent --fail -X POST -H 'Content-Type: application/x-ndjson' \
+            --data-binary '{"level":"error","category":"api","message":"contact alice@example.com"}' \
+            http://localhost:8081/ingest
+          sleep 1
+          curl --silent --fail http://localhost:8080/stats | tee stats.json
+          grep -q '"ingested": 1' stats.json
+          docker logs streammesh-ci
+          docker rm -f streammesh-ci

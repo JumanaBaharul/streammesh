@@ -1,0 +1,25 @@
+# Binaries and build output
+/streammesh
+/streammesh.exe
+/dist/
+/bin/
+
+# Runtime state produced by the engine
+/.streammesh/
+.streammesh/
+/out/
+*.ndjson
+*.wal
+*.log
+!examples/*.log
+
+# Test and coverage artifacts
+*.out
+coverage.txt
+coverage.html
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+*.swp

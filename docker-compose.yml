@@ -1,0 +1,58 @@
+# One command brings up the whole thing:
+#
+#   docker compose up --build
+#
+# The engine starts with the self-contained demo config, the generator pushes
+# events at it, and the stats service prints a snapshot of /stats to the logs so
+# the throughput is visible without opening a browser or a shell.
+
+services:
+  streammesh:
+    build:
+      context: .
+    command: ["run", "-config", "/etc/streammesh/examples/demo.yaml"]
+    working_dir: /state
+    restart: unless-stopped
+    ports:
+      - "8080:8080" # control plane: /healthz /readyz /metrics /stats
+      - "8081:8081" # ingest: POST /ingest
+    volumes:
+      - streammesh-state:/state
+    healthcheck:
+      # The image is distroless, so the binary probes itself instead of curl.
+      test: ["CMD", "/usr/local/bin/streammesh", "check", "-config", "/etc/streammesh/examples/demo.yaml"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  generator:
+    build:
+      context: .
+    entrypoint: ["/usr/local/bin/streammesh"]
+    command:
+      - gen
+      - -url=http://streammesh:8081/ingest
+      - -rate=20000
+      - -duration=25s
+      - -batch=500
+      - -sources=16
+    depends_on:
+      streammesh:
+        condition: service_healthy
+
+  # Prints a snapshot from the control plane, then exits. Its output is in
+  # `docker compose logs stats`.
+  stats:
+    image: curlimages/curl:latest
+    depends_on:
+      streammesh:
+        condition: service_healthy
+    command:
+      - "--silent"
+      - "--retry=10"
+      - "--retry-delay=2"
+      - "--retry-connrefused"
+      - "http://streammesh:8080/stats"
+
+volumes:
+  streammesh-state:

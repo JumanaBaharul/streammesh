@@ -1,0 +1,77 @@
+# Throughput harness: the same engine, but everything a rule routes is delivered
+# to an in-memory sink, so the measured rate is ingest -> rules -> delivery
+# rather than a disk write on a laptop with real-time antivirus scanning.
+#
+#   streammesh run -config examples/bench.yaml
+#   streammesh gen -url http://localhost:8081/ingest -rate 50000 -duration 30s -batch 1000 -sources 16
+#   curl -s localhost:8080/stats
+
+server:
+  addr: ":8080"
+
+pipeline:
+  workers: 4
+  queue_size: 65536
+  sink_queue_size: 65536
+  default_sinks: [memory]
+  wal:
+    enabled: true
+    dir: .streammesh/wal
+    segment_bytes: 64MB
+    fsync_interval: 200ms
+  dedup:
+    enabled: true
+    ttl: 10m
+    bits: 4194304
+    hashes: 3
+
+dlp:
+  rule_sets:
+    - name: pii
+      patterns:
+        - name: email
+          regex: '[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'
+          replace: "[redacted:email]"
+        - name: bearer
+          regex: '(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}'
+          replace: "[redacted:token]"
+
+sources:
+  - id: bench-http
+    type: http
+    listen: ":8081"
+    path: /ingest
+    parser: json
+    max_body_bytes: 32MB
+
+sinks:
+  - id: memory
+    type: memory
+    buffer_size: 4096
+    batch_size: 1000
+    flush_interval: 50ms
+
+rules:
+  - name: drop-healthcheck
+    match:
+      field: category
+      equals: healthcheck
+    actions:
+      - drop: true
+  - name: redact-pii
+    match:
+      always: true
+    actions:
+      - redact: pii
+  - name: sample-debug
+    match:
+      field: severity
+      equals: debug
+    actions:
+      - sample:
+          percent: 10
+  - name: default
+    match:
+      always: true
+    actions:
+      - route: [memory]

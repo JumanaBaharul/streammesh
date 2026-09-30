@@ -1,0 +1,73 @@
+# Self-contained demo: no external systems, no credentials, no broker.
+#
+#   streammesh run -config examples/demo.yaml        # terminal 1
+#   streammesh gen -url http://localhost:8081/ingest -rate 3000 -duration 20s
+#   curl -s localhost:8080/stats | head -40
+#
+# The write-ahead log stays on, because it is the point of the project: events
+# are durable before they are acknowledged, and /stats shows the segment, the
+# unsynced byte window and the append count. Runtime state lands in
+# .streammesh/ and ./out/, both of which are gitignored.
+
+server:
+  addr: ":8080"
+
+pipeline:
+  workers: 4
+  queue_size: 8192
+  default_sinks: [recent]
+
+dlp:
+  rule_sets:
+    - name: pii
+      patterns:
+        - name: email
+          regex: '[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'
+          replace: "[redacted:email]"
+        - name: bearer
+          regex: '(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}'
+          replace: "[redacted:token]"
+
+sources:
+  - id: demo-http
+    type: http
+    listen: ":8081"
+    path: /ingest
+    parser: json
+
+sinks:
+  - id: recent
+    type: memory
+    buffer_size: 2048
+  - id: archive
+    type: file
+    file: ./out/demo.ndjson
+    batch_size: 500
+    flush_interval: 250ms
+
+rules:
+  - name: drop-healthcheck
+    match:
+      field: category
+      equals: healthcheck
+    actions:
+      - drop: true
+
+  - name: redact-pii
+    match:
+      always: true
+    actions:
+      - redact: pii
+
+  - name: route-errors
+    match:
+      severity: error
+    actions:
+      - tag: alert
+      - route: [archive]
+
+  - name: default
+    match:
+      always: true
+    actions:
+      - route: [archive]

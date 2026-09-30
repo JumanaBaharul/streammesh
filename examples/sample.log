@@ -1,0 +1,5 @@
+{"timestamp":"2026-09-30T09:15:01Z","level":"info","service":"checkout","host":"api-11","category":"api","actor":"svc-billing","resource":"/v1/orders","trace_id":"trace-1a2b3c4d","message":"order accepted","latency_ms":41.2}
+{"timestamp":"2026-09-30T09:15:02Z","level":"warn","service":"checkout","host":"api-12","category":"api","actor":"svc-billing","resource":"/v1/orders","trace_id":"trace-2b3c4d5e","message":"upstream slow, retrying","latency_ms":1204.9}
+{"timestamp":"2026-09-30T09:15:03Z","level":"error","service":"auth","host":"edge-01","category":"auth","actor":"alice.k","resource":"/v1/sessions","trace_id":"trace-3c4d5e6f","message":"token rejected for alice.k@example.com","latency_ms":18.4}
+{"timestamp":"2026-09-30T09:15:04Z","level":"info","service":"etl","host":"worker-3","category":"file-transfer","actor":"ci-runner","resource":"s3://streammesh-archive/telemetry","trace_id":"trace-4d5e6f70","message":"checkpoint flushed","bytes":1048576}
+{"timestamp":1789000505,"level":"debug","service":"search","host":"api-12","category":"healthcheck","actor":"svc-ingest","resource":"/internal/metrics","message":"probe ok"}
